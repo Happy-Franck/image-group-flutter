@@ -25,7 +25,6 @@ class MyApp extends StatelessWidget {
 enum SortOption { nameAsc, nameDesc, countAsc, countDesc }
 enum ViewOption { list, grid }
 
-// Page d'accueil : liste des dossiers dans "Datasetup"
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -56,14 +55,23 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<bool> _requestPermission() async {
-    if (await Permission.storage.request().isGranted) {
-      return true;
+    // Demande stockage complet sur Android 11+
+    if (Platform.isAndroid) {
+      if (!await Permission.manageExternalStorage.request().isGranted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Permission de stockage refusée")),
+        );
+        return false;
+      }
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Permission stockage refusée")),
-      );
-      return false;
+      if (!await Permission.storage.request().isGranted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Permission de stockage refusée")),
+        );
+        return false;
+      }
     }
+    return true;
   }
 
   void _loadFolders() {
@@ -255,7 +263,7 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-// Page pour gérer un dossier spécifique : ajouter/déplacer/supprimer images
+// ------------------- FolderPage -----------------------
 class FolderPage extends StatefulWidget {
   final Directory folder;
   const FolderPage({super.key, required this.folder});
@@ -283,19 +291,40 @@ class _FolderPageState extends State<FolderPage> {
   }
 
   Future<void> _pickAndMoveImages() async {
-    final ImagePicker picker = ImagePicker();
-    final List<XFile>? pickedFiles = await picker.pickMultiImage();
+    // Permission Android 11+
+    if (Platform.isAndroid && !await Permission.manageExternalStorage.isGranted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Permission de stockage refusée")),
+      );
+      return;
+    }
 
-    if (pickedFiles != null && pickedFiles.isNotEmpty) {
+    final ImagePicker picker = ImagePicker();
+
+    try {
+      final List<XFile>? pickedFiles = await picker.pickMultiImage();
+
+      if (pickedFiles == null || pickedFiles.isEmpty) return;
+
       for (XFile file in pickedFiles) {
-        final newFile = File(
-            '${widget.folder.path}/${DateTime.now().millisecondsSinceEpoch}_${file.name}');
-        await File(file.path).copy(newFile.path);
-        await File(file.path).delete();
+        final File srcFile = File(file.path);
+        final String newPath =
+            '${widget.folder.path}/${DateTime.now().millisecondsSinceEpoch}_${file.name}';
+        final File destFile = File(newPath);
+
+        await srcFile.copy(destFile.path);
+        await srcFile.delete();
       }
+
       _loadImages();
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Images ajoutées avec succès !")),
+      );
+    } catch (e) {
+      debugPrint("Erreur déplacement images : $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Impossible de déplacer les images")),
       );
     }
   }
@@ -376,7 +405,8 @@ class _FolderPageState extends State<FolderPage> {
                       if (selected)
                         Container(
                           color: Colors.black.withOpacity(0.5),
-                          child: const Icon(Icons.check_circle, color: Colors.white, size: 40),
+                          child: const Icon(Icons.check_circle,
+                              color: Colors.white, size: 40),
                         ),
                     ],
                   ),
@@ -391,7 +421,7 @@ class _FolderPageState extends State<FolderPage> {
   }
 }
 
-// Page de visualisation des images avec zoom et balayage
+// ------------------- ImageViewer -----------------------
 class ImageViewer extends StatefulWidget {
   final List<File> images;
   final int initialIndex;
@@ -415,55 +445,28 @@ class _ImageViewerState extends State<ImageViewer> {
 
   @override
   void dispose() {
+    _pageController.dispose();
     for (var controller in transformationControllers.values) {
       controller.dispose();
     }
     super.dispose();
   }
 
-  TransformationController _getController(int index) {
-    if (!transformationControllers.containsKey(index)) {
-      transformationControllers[index] = TransformationController();
-    }
-    return transformationControllers[index]!;
-  }
-
-  void _handleDoubleTap(int index) {
-    final controller = _getController(index);
-    if (controller.value != Matrix4.identity()) {
-      controller.value = Matrix4.identity();
-    } else {
-      controller.value = Matrix4.identity()..scale(3.0);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: Text('${currentIndex + 1} / ${widget.images.length}'),
-      ),
       body: PageView.builder(
         controller: _pageController,
         itemCount: widget.images.length,
-        onPageChanged: (index) {
-          setState(() {
-            currentIndex = index;
-          });
-        },
+        onPageChanged: (index) => setState(() => currentIndex = index),
         itemBuilder: (context, index) {
-          return GestureDetector(
-            onDoubleTap: () => _handleDoubleTap(index),
+          final file = widget.images[index];
+          transformationControllers.putIfAbsent(index, () => TransformationController());
+          return InteractiveViewer(
+            transformationController: transformationControllers[index],
             child: Center(
-              child: InteractiveViewer(
-                transformationController: _getController(index),
-                panEnabled: true,
-                minScale: 1.0,
-                maxScale: 5.0,
-                child: Image.file(widget.images[index]),
-              ),
+              child: Image.file(file),
             ),
           );
         },
